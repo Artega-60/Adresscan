@@ -13,11 +13,16 @@ interface GeocodeResult {
   lon: number;
 }
 
+// Statut simple par risque : Géorisques (couche GASPAR) nous dit seulement si
+// un risque est recensé sur la commune, pas un niveau détaillé par adresse.
+type StatutRisque = "present" | "non_recense" | "indisponible";
+
 interface RisqueSection {
-  inondation: "faible" | "moyen" | "eleve" | "inconnu";
-  argiles: "faible" | "moyen" | "eleve" | "inconnu";
+  inondation: StatutRisque;
+  argiles: "bientot_disponible"; // nécessite une couche géospatiale séparée (RGA/BRGM), pas encore branchée
   sismicite: string | null;
   radon: string | null;
+  autresRisques: string[]; // tous les autres risques recensés sur la commune, pour info
 }
 
 interface TransactionComparable {
@@ -35,6 +40,7 @@ interface Rapport {
     prixMoyenM2: number | null;
     nbTransactions: number;
     comparables: TransactionComparable[];
+    erreur: string | null;
   };
 }
 
@@ -80,47 +86,78 @@ async function getRisques(lat: number, lon: number): Promise<RisqueSection> {
     if (!res.ok) throw new Error("Géorisques indisponible");
     const data = await res.json();
 
-    // NOTE: la structure exacte de la réponse Géorisques varie selon les
-    // couches (argiles, inondation, sismicité, radon). À affiner une fois
-    // qu'on a un exemple de réponse réelle sous les yeux.
-    return {
-      inondation: data?.inondation ?? "inconnu",
-      argiles: data?.argiles ?? "inconnu",
-      sismicite: data?.sismicite ?? null,
-      radon: data?.radon ?? null,
-    };
+    // Structure réelle confirmée : data.data[0].risques_detail est un tableau
+    // de { num_risque, libelle_risque_long } recensés au niveau de la commune.
+    const detail: { libelle_risque_long: string }[] =
+      data?.data?.[0]?.risques_detail ?? [];
+
+    const libelles = detail.map((r) => r.libelle_risque_long);
+
+    const inondation: StatutRisque = libelles.some((l) =>
+      l.toLowerCase().includes("inondation")
+    )
+      ? "present"
+      : "non_recense";
+
+    const sismicite = detail.find((r) =>
+      r.libelle_risque_long.toLowerCase().includes("sism")
+    )?.libelle_risque_long ?? null;
+
+    const radon = detail.find((r) =>
+      r.libelle_risque_long.toLowerCase().includes("radon")
+    )?.libelle_risque_long ?? null;
+
+    // Le reste des risques recensés (hors inondation/sismicité/radon déjà extraits)
+    const autresRisques = libelles.filter(
+      (l) =>
+        !l.toLowerCase().includes("inondation") &&
+        !l.toLowerCase().includes("sism") &&
+        !l.toLowerCase().includes("radon")
+    );
+
+    return { inondation, argiles: "bientot_disponible", sismicite, radon, autresRisques };
   } catch {
     return {
-      inondation: "inconnu",
-      argiles: "inconnu",
+      inondation: "indisponible",
+      argiles: "bientot_disponible",
       sismicite: null,
       radon: null,
+      autresRisques: [],
     };
   }
 }
 
 // ---------------------------------------------------------------------------
-// Étape 3 — transactions comparables via DVF (data.gouv.fr)
-// On utilise l'API DVF de data.gouv (app.dvf.etalab.gouv.fr ou api.cquest.org
-// selon disponibilité) filtrée par code commune (citycode).
+// Étape 3 — transactions comparables via DVF
+//
+// L'ancienne URL officielle (api.dvf.etalab.gouv.fr) n'existe plus. On utilise
+// l'API communautaire de Christian Quest (api.cquest.org/dvf), maintenue
+// bénévolement et sans garantie officielle de disponibilité dans le temps —
+// à surveiller. Si elle tombe, il faudra basculer sur les fichiers bruts DVF
+// (explore.data.gouv.fr) rechargés dans notre propre base (Supabase).
+// Doc: https://github.com/cquest/dvf_as_api
 // ---------------------------------------------------------------------------
 
 async function getMarche(citycode: string) {
   try {
-    const url = `https://api.dvf.etalab.gouv.fr/dvf?code_commune=${citycode}`;
+    const url = `https://api.cquest.org/dvf?code_commune=${citycode}&nature_mutation=Vente`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error("DVF indisponible");
+    if (!res.ok) throw new Error(`DVF indisponible (statut ${res.status})`);
     const data = await res.json();
 
-    const ventes = (data?.resultats ?? [])
-      .filter((v: any) => v.valeur_fonciere && v.surface_relle_bati)
+    // Parsing défensif : selon la version de l'API, le résultat peut être un
+    // tableau direct ou un objet { resultats: [...] }.
+    const brut: any[] = Array.isArray(data) ? data : data?.resultats ?? [];
+
+    const ventes = brut
+      .filter((v: any) => v.valeur_fonciere && v.surface_reelle_bati)
       .slice(0, 10)
       .map((v: any) => ({
         adresse: `${v.adresse_numero ?? ""} ${v.adresse_nom_voie ?? ""}`.trim(),
-        surface: v.surface_relle_bati ?? null,
+        surface: v.surface_reelle_bati ?? null,
         prix: v.valeur_fonciere,
-        prixM2: v.surface_relle_bati
-          ? Math.round(v.valeur_fonciere / v.surface_relle_bati)
+        prixM2: v.surface_reelle_bati
+          ? Math.round(v.valeur_fonciere / v.surface_reelle_bati)
           : null,
         date: v.date_mutation,
       })) as TransactionComparable[];
@@ -140,9 +177,15 @@ async function getMarche(citycode: string) {
       prixMoyenM2,
       nbTransactions: ventes.length,
       comparables: ventes,
+      erreur: null as string | null,
     };
-  } catch {
-    return { prixMoyenM2: null, nbTransactions: 0, comparables: [] };
+  } catch (e: any) {
+    return {
+      prixMoyenM2: null,
+      nbTransactions: 0,
+      comparables: [],
+      erreur: e?.message ?? "Erreur inconnue lors de la récupération DVF",
+    };
   }
 }
 
