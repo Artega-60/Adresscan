@@ -9,10 +9,11 @@ interface Rapport {
     postcode: string;
   };
   risques: {
-    inondation: string;
-    argiles: string;
+    inondation: "present" | "non_recense" | "indisponible";
+    argiles: "bientot_disponible";
     sismicite: string | null;
     radon: string | null;
+    autresRisques: string[];
   };
   marche: {
     prixMoyenM2: number | null;
@@ -24,8 +25,15 @@ interface Rapport {
       prixM2: number | null;
       date: string;
     }[];
+    erreur: string | null;
   };
 }
+
+const LABELS_INONDATION: Record<string, string> = {
+  present: "Risque recensé",
+  non_recense: "Non recensé",
+  indisponible: "Donnée indisponible",
+};
 
 export default function Home() {
   const [query, setQuery] = useState("");
@@ -96,24 +104,34 @@ export default function Home() {
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <p className="text-neutral-500 text-xs">Inondation</p>
-                <p className="capitalize">{rapport.risques.inondation}</p>
+                <p>{LABELS_INONDATION[rapport.risques.inondation]}</p>
               </div>
               <div>
-                <p className="text-neutral-500 text-xs">Argiles</p>
-                <p className="capitalize">{rapport.risques.argiles}</p>
+                <p className="text-neutral-500 text-xs">Argiles (retrait-gonflement)</p>
+                <p className="text-neutral-400">Bientôt disponible</p>
               </div>
             </div>
+            {rapport.risques.autresRisques.length > 0 && (
+              <p className="text-xs text-neutral-500 mt-3">
+                Autres risques recensés sur la commune :{" "}
+                {rapport.risques.autresRisques.join(", ")}
+              </p>
+            )}
           </div>
 
           <div className="border border-neutral-200 rounded-lg p-4">
             <p className="font-medium text-sm mb-3">Prix et marché</p>
-            {rapport.marche.prixMoyenM2 ? (
+            {rapport.marche.erreur ? (
+              <p className="text-sm text-red-600 mb-3">
+                Source de prix indisponible ({rapport.marche.erreur})
+              </p>
+            ) : rapport.marche.prixMoyenM2 ? (
               <p className="text-2xl font-medium mb-3">
                 {rapport.marche.prixMoyenM2.toLocaleString("fr-FR")} €/m²
               </p>
             ) : (
               <p className="text-sm text-neutral-500 mb-3">
-                Pas assez de données locales pour estimer un prix moyen
+                Pas assez de transactions récentes pour estimer un prix moyen
               </p>
             )}
 
