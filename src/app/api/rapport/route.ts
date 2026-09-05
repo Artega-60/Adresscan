@@ -142,13 +142,15 @@ async function getMarche(citycode: string) {
     const { data, error } = await supabase
       .from("dvf_transactions")
       .select(
-        "adresse_numero, adresse_nom_voie, valeur_fonciere, surface_reelle_bati, date_mutation"
+        "adresse_numero, adresse_nom_voie, valeur_fonciere, surface_reelle_bati, date_mutation, type_local"
       )
       .eq("code_commune", citycode)
       .eq("nature_mutation", "Vente")
+      .in("type_local", ["Appartement", "Maison"]) // exclut locaux commerciaux, terrains, etc.
       .not("valeur_fonciere", "is", null)
       .not("surface_reelle_bati", "is", null)
-      .gt("surface_reelle_bati", 0)
+      .gt("surface_reelle_bati", 9) // exclut les micro-surfaces probablement mal saisies
+      .lt("surface_reelle_bati", 400) // exclut les surfaces aberrantes pour du résidentiel
       .order("date_mutation", { ascending: false })
       .limit(10);
 
