@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getSupabase } from "@/lib/supabase";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -128,39 +129,38 @@ async function getRisques(lat: number, lon: number): Promise<RisqueSection> {
 }
 
 // ---------------------------------------------------------------------------
-// Étape 3 — transactions comparables via DVF
+// Étape 3 — transactions comparables via NOTRE base Supabase
 //
-// L'ancienne URL officielle (api.dvf.etalab.gouv.fr) n'existe plus. On utilise
-// l'API communautaire de Christian Quest (api.cquest.org/dvf), maintenue
-// bénévolement et sans garantie officielle de disponibilité dans le temps —
-// à surveiller. Si elle tombe, il faudra basculer sur les fichiers bruts DVF
-// (explore.data.gouv.fr) rechargés dans notre propre base (Supabase).
-// Doc: https://github.com/cquest/dvf_as_api
+// Les données DVF sont importées à l'avance dans la table `dvf_transactions`
+// (voir procédure d'import département par département). On interroge notre
+// propre base plutôt qu'une API externe tierce, pour la fiabilité.
 // ---------------------------------------------------------------------------
 
 async function getMarche(citycode: string) {
   try {
-    const url = `https://api.cquest.org/dvf?code_commune=${citycode}&nature_mutation=Vente`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`DVF indisponible (statut ${res.status})`);
-    const data = await res.json();
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from("dvf_transactions")
+      .select(
+        "adresse_numero, adresse_nom_voie, valeur_fonciere, surface_reelle_bati, date_mutation"
+      )
+      .eq("code_commune", citycode)
+      .eq("nature_mutation", "Vente")
+      .not("valeur_fonciere", "is", null)
+      .not("surface_reelle_bati", "is", null)
+      .gt("surface_reelle_bati", 0)
+      .order("date_mutation", { ascending: false })
+      .limit(10);
 
-    // Parsing défensif : selon la version de l'API, le résultat peut être un
-    // tableau direct ou un objet { resultats: [...] }.
-    const brut: any[] = Array.isArray(data) ? data : data?.resultats ?? [];
+    if (error) throw new Error(error.message);
 
-    const ventes = brut
-      .filter((v: any) => v.valeur_fonciere && v.surface_reelle_bati)
-      .slice(0, 10)
-      .map((v: any) => ({
-        adresse: `${v.adresse_numero ?? ""} ${v.adresse_nom_voie ?? ""}`.trim(),
-        surface: v.surface_reelle_bati ?? null,
-        prix: v.valeur_fonciere,
-        prixM2: v.surface_reelle_bati
-          ? Math.round(v.valeur_fonciere / v.surface_reelle_bati)
-          : null,
-        date: v.date_mutation,
-      })) as TransactionComparable[];
+    const ventes: TransactionComparable[] = (data ?? []).map((v) => ({
+      adresse: `${v.adresse_numero ?? ""} ${v.adresse_nom_voie ?? ""}`.trim(),
+      surface: v.surface_reelle_bati,
+      prix: v.valeur_fonciere,
+      prixM2: Math.round(v.valeur_fonciere / v.surface_reelle_bati),
+      date: v.date_mutation,
+    }));
 
     const prixM2Valides = ventes
       .map((v) => v.prixM2)
@@ -177,14 +177,17 @@ async function getMarche(citycode: string) {
       prixMoyenM2,
       nbTransactions: ventes.length,
       comparables: ventes,
-      erreur: null as string | null,
+      erreur:
+        ventes.length === 0
+          ? "Aucune transaction importée pour cette commune pour l'instant"
+          : null,
     };
   } catch (e: any) {
     return {
       prixMoyenM2: null,
       nbTransactions: 0,
       comparables: [],
-      erreur: e?.message ?? "Erreur inconnue lors de la récupération DVF",
+      erreur: e?.message ?? "Erreur inconnue lors de la lecture Supabase",
     };
   }
 }
