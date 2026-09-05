@@ -10,7 +10,7 @@ interface Rapport {
   };
   risques: {
     inondation: "present" | "non_recense" | "indisponible";
-    argiles: "bientot_disponible";
+    argiles: "Faible" | "Moyen" | "Fort" | "indisponible";
     sismicite: string | null;
     radon: string | null;
     autresRisques: string[];
@@ -33,6 +33,13 @@ const LABELS_INONDATION: Record<string, string> = {
   present: "Risque recensé",
   non_recense: "Non recensé",
   indisponible: "Donnée indisponible",
+};
+
+const COULEUR_ARGILE: Record<string, string> = {
+  Faible: "var(--vert-cadastre)",
+  Moyen: "var(--ocre-cadastre)",
+  Fort: "#A23E33",
+  indisponible: "var(--trait)",
 };
 
 function Tampon({ statut }: { statut: "present" | "non_recense" | "indisponible" }) {
@@ -187,8 +194,15 @@ export default function Home() {
                   <p className="text-xs mb-1" style={{ color: "var(--encre-clair)" }}>
                     Argiles (retrait-gonflement)
                   </p>
-                  <p style={{ fontFamily: "var(--font-mono-data)", color: "var(--encre-clair)" }}>
-                    Bientôt disponible
+                  <p
+                    style={{
+                      fontFamily: "var(--font-mono-data)",
+                      color: COULEUR_ARGILE[rapport.risques.argiles],
+                    }}
+                  >
+                    {rapport.risques.argiles === "indisponible"
+                      ? "Donnée indisponible"
+                      : rapport.risques.argiles}
                   </p>
                 </div>
                 {rapport.risques.sismicite && (
