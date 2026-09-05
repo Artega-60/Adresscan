@@ -18,9 +18,11 @@ interface GeocodeResult {
 // un risque est recensé sur la commune, pas un niveau détaillé par adresse.
 type StatutRisque = "present" | "non_recense" | "indisponible";
 
+type NiveauArgile = "Faible" | "Moyen" | "Fort" | "indisponible";
+
 interface RisqueSection {
   inondation: StatutRisque;
-  argiles: "bientot_disponible"; // nécessite une couche géospatiale séparée (RGA/BRGM), pas encore branchée
+  argiles: NiveauArgile;
   sismicite: string | null;
   radon: string | null;
   autresRisques: string[]; // tous les autres risques recensés sur la commune, pour info
@@ -80,6 +82,38 @@ async function geocode(query: string): Promise<GeocodeResult | null> {
 // (Endpoint simplifié — à ajuster une fois la clé/quota validés côté Géorisques)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Argiles (retrait-gonflement) — couche géospatiale ArcGIS distincte de
+// Géorisques/GASPAR. Requête de type "point dans un polygone" : on envoie les
+// coordonnées, le service renvoie le polygone de zone à risque qui contient
+// ce point, avec son niveau d'aléa (Faible/Moyen/Fort).
+// Source : Géorisques via Esri France (couche "Exposition retrait-gonflement
+// des argiles", données 2020, mise à jour ponctuelle par le fournisseur).
+// ---------------------------------------------------------------------------
+
+async function getArgiles(lat: number, lon: number): Promise<NiveauArgile> {
+  try {
+    const url =
+      `https://services.arcgis.com/d3voDfTFbHOCRwVR/ArcGIS/rest/services/` +
+      `G%c3%a9orisques_Exposition_retrait_gonflement_des_argiles/FeatureServer/2/query` +
+      `?geometry=${lon},${lat}&geometryType=esriGeometryPoint&inSR=4326` +
+      `&spatialRel=esriSpatialRelIntersects&outFields=ALEA&returnGeometry=false&f=json`;
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Service argiles indisponible");
+    const data = await res.json();
+
+    const alea = data?.features?.[0]?.attributes?.ALEA as string | undefined;
+
+    if (alea === "Faible" || alea === "Moyen" || alea === "Fort") {
+      return alea;
+    }
+    return "indisponible";
+  } catch {
+    return "indisponible";
+  }
+}
+
 async function getRisques(lat: number, lon: number): Promise<RisqueSection> {
   try {
     const url = `https://www.georisques.gouv.fr/api/v1/gaspar/risques?latlon=${lon},${lat}&rayon=1000`;
@@ -116,11 +150,16 @@ async function getRisques(lat: number, lon: number): Promise<RisqueSection> {
         !l.toLowerCase().includes("radon")
     );
 
-    return { inondation, argiles: "bientot_disponible", sismicite, radon, autresRisques };
+    // Requête argiles indépendante (couche différente), en parallèle serait
+    // possible mais on la fait ici simplement pour garder la fonction lisible.
+    const argiles = await getArgiles(lat, lon);
+
+    return { inondation, argiles, sismicite, radon, autresRisques };
   } catch {
+    const argiles = await getArgiles(lat, lon);
     return {
       inondation: "indisponible",
-      argiles: "bientot_disponible",
+      argiles,
       sismicite: null,
       radon: null,
       autresRisques: [],
